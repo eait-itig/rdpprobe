@@ -1,0 +1,15 @@
+{application, rdpprobe,
+ [
+  {description, "probe an rdp server for live-ness"},
+  {vsn, "1.0"},
+  {registered, []},
+  {included_applications, [
+  ]},
+  {applications, [
+                  kernel,
+                  stdlib,
+                  crypto
+                 ]},
+  {start_phases, []},
+  {env, []}
+ ]}.
