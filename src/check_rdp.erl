@@ -8,8 +8,8 @@
 
 -module(check_rdp).
 
--include("x224.hrl").
--include("rdpp.hrl").
+-include_lib("rdp_proto/include/x224.hrl").
+-include_lib("rdp_proto/include/rdpp.hrl").
 -include_lib("public_key/include/public_key.hrl").
 
 -export([main/1]).

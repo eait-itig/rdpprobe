@@ -8,7 +8,8 @@
   {applications, [
                   kernel,
                   stdlib,
-                  crypto
+                  crypto,
+                  rdp_proto
                  ]},
   {start_phases, []},
   {env, []}
