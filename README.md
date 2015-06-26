@@ -21,3 +21,13 @@ You can add it to nagios/icinga with a command block like this:
             command_name    check_rdp
             command_line    $USER1$/check_rdp -h $ARG1$ -t 5000 $HOSTADDRESS$
             }
+
+## License
+
+2-clause BSD
+
+## Compiling
+
+Install Erlang and rebar, then
+
+    rebar get-deps && rebar compile && rebar escriptize
