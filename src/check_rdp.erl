@@ -85,6 +85,11 @@ connect(Host, Port, SockOpts, Timeout, Attempts) ->
 		Err -> Err
 	end.
 
+certstring({utf8String, S}) ->
+	{printableString, unicode:characters_to_list(S)};
+certstring({printableString, S}) ->
+	{printableString, S}.
+
 probe(Host, TlsHost, Port, Timeout, WarnCredSsp, Protocols) ->
 	MyNum = crypto:rand_uniform(1000,9000),
 	SockOpts = [binary, {packet, tpkt}, {active, true}, {nodelay, true}],
@@ -167,8 +172,8 @@ probe(Host, TlsHost, Port, Timeout, WarnCredSsp, Protocols) ->
 			#'Validity'{notAfter = Expiry} = Validity,
 			{rdnSequence, IssuerAttrs} = Issuer,
 			{rdnSequence, SubjectAttrs} = Subject,
-			[{printableString, IssuerCN}] = [V || [#'AttributeTypeAndValue'{type = Type, value = V}] <- IssuerAttrs, Type =:= {2,5,4,3}],
-			[{printableString, SubjectCN}] = [V || [#'AttributeTypeAndValue'{type = Type, value = V}] <- SubjectAttrs, Type =:= {2,5,4,3}],
+			[{printableString, IssuerCN}] = [certstring(V) || [#'AttributeTypeAndValue'{type = Type, value = V}] <- IssuerAttrs, Type =:= {2,5,4,3}],
+			[{printableString, SubjectCN}] = [certstring(V) || [#'AttributeTypeAndValue'{type = Type, value = V}] <- SubjectAttrs, Type =:= {2,5,4,3}],
 
 			Expired = case Expiry of
 				{utcTime, Str} ->
