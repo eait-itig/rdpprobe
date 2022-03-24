@@ -27,7 +27,7 @@
 %% THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 %%
 
--module(check_rdp).
+-module(rdpprobe).
 
 -include_lib("rdp_proto/include/x224.hrl").
 -include_lib("rdp_proto/include/rdpp.hrl").
@@ -36,23 +36,30 @@
 -export([main/1]).
 
 main(Args) ->
-	Opts = [
-		{tls_host, "h", "tls-host", string},
-		{port, "p", "port", integer},
-		{timeout, "t", "timeout", integer},
-		{warn_credssp, "w", "warn-credssp", false}
+	{ok, _} = application:ensure_all_started(rdpprobe),
+	OptSpecList = [
+		{tls_host, $h, "tls-host", string, "Hostname for certificate checks"},
+		{port, $p, "port", {integer, 3389}, "TCP port RDP is running on"},
+		{timeout, $t, "timeout", {integer, 1000}, "Timeout in seconds"},
+		{warn_credssp, $w, "warn-credssp", {boolean, false}, "Warn if CredSSP is enabled"}
 	],
-	Args2 = getopt(Args, Opts, []),
-	{OptArgs, ArgArgs} = lists:partition(fun(K) -> is_tuple(K) end, lists:reverse(Args2)),
-	main_opt(ArgArgs, OptArgs).
+	case getopt:parse(OptSpecList, Args) of
+		{ok, {Options, [Host]}} ->
+			main_opt(Host, maps:from_list(Options));
+		{ok, {_Options, []}} ->
+			io:format("rdpprobe: error: host argument required\n"),
+			getopt:usage(OptSpecList, "rdpprobe"),
+			halt(1);
+		{error, {Why, Data}} ->
+			io:format("rdpprobe: error: ~s ~p\n", [Why, Data]),
+			getopt:usage(OptSpecList, "rdpprobe"),
+			halt(1)
+	end.
 
-main_opt([Host], Opts) ->
-	Port = proplists:get_value(port, Opts, 3389),
-	TlsHost = proplists:get_value(tls_host, Opts, Host),
-	Timeout = proplists:get_value(timeout, Opts, 1000),
-	WarnCredSsp = proplists:get_value(warn_credssp, Opts, false),
+main_opt(Host, Opts) ->
+	#{port := Port, timeout := Timeout, warn_credssp := WarnCredSsp} = Opts,
+	TlsHost = maps:get(tls_host, Opts, Host),
 	error_logger:tty(false),
-	[ok = application:start(X) || X <- [crypto,asn1,public_key,ssl]],
 	Out = probe(Host, TlsHost, Port, Timeout, WarnCredSsp, [ssl, credssp]),
 	case Out of
 		{ok, String, Args} ->
@@ -61,20 +68,7 @@ main_opt([Host], Opts) ->
 			io:format("WARNING: " ++ String ++ "\n", Args), halt(1);
 		{critical, String, Args} ->
 			io:format("CRITICAL: " ++ String ++ "\n", Args), halt(2)
-	end;
-
-main_opt(_, _) ->
-	usage().
-
-usage() ->
-	io:format("usage: check_rdp [opts] <host or ip>\n"),
-	io:format("\noptions:\n"),
-	io:format("  -h|--tls-host hostname\n"),
-	io:format("      use a different hostname for the TLS certificate check\n"),
-	io:format("  -p|--port port (default 3389)\n"),
-	io:format("  -t|--timeout ms (default 1000)\n"),
-	io:format("  -w|--warn-credssp\n"),
-	halt(3).
+	end.
 
 connect(Host, Port, SockOpts, Timeout) -> connect(Host, Port, SockOpts, Timeout div 3, 3).
 connect(Host, Port, SockOpts, Timeout, Attempts) ->
@@ -163,7 +157,10 @@ probe(Host, TlsHost, Port, Timeout, WarnCredSsp, Protocols) ->
 		fun(Sock, SslSock, Prots) ->
 			{ok, CertBin} = ssl:peercert(SslSock),
 			Cert = public_key:pkix_decode_cert(CertBin, otp),
-			{ok, {Ver, Cipher}} = ssl:connection_info(SslSock),
+			{ok, CI} = ssl:connection_information(SslSock),
+			#{protocol := Ver, selected_cipher_suite := CipherSuite} = maps:from_list(CI),
+			#{cipher := CipherName, key_exchange := KeyEx} = CipherSuite,
+			Cipher = {CipherName, KeyEx},
 			ok = ssl:close(SslSock),
 			gen_tcp:close(Sock),
 
@@ -175,16 +172,30 @@ probe(Host, TlsHost, Port, Timeout, WarnCredSsp, Protocols) ->
 			[{printableString, IssuerCN}] = [certstring(V) || [#'AttributeTypeAndValue'{type = Type, value = V}] <- IssuerAttrs, Type =:= {2,5,4,3}],
 			[{printableString, SubjectCN}] = [certstring(V) || [#'AttributeTypeAndValue'{type = Type, value = V}] <- SubjectAttrs, Type =:= {2,5,4,3}],
 
-			Expired = case Expiry of
+			ExpireDT = case Expiry of
 				{utcTime, Str} ->
-					Time = case string:to_integer(Str) of
-						{T, "Z"} -> {T div 1000000, T rem 1000000, 0}
+					<<YBin:2/binary, MBin:2/binary, DBin:2/binary, HBin:2/binary, MinBin:2/binary, SBin:2/binary, "Z">> = list_to_binary(Str),
+					Year = case binary_to_integer(YBin) of
+						N when (N < 70) -> 2000 + N;
+						N -> 1900 + N
 					end,
-					case timer:now_diff(os:timestamp(), Time) of
-						N when N >= 0 -> {true, N / 1000000};
-						N when abs(N) < 30*24*3600*1000000 -> {soon, abs(N) / 1000000};
-						N -> false
-					end
+					{
+						{Year, binary_to_integer(MBin), binary_to_integer(DBin)},
+						{binary_to_integer(HBin), binary_to_integer(MinBin), binary_to_integer(SBin)}
+					};
+				{generalTime, Str} ->
+					<<YBin:4/binary, MBin:2/binary, DBin:2/binary, HBin:2/binary, MinBin:2/binary, SBin:2/binary, "Z">> = list_to_binary(Str),
+					{
+						{binary_to_integer(YBin), binary_to_integer(MBin), binary_to_integer(DBin)},
+						{binary_to_integer(HBin), binary_to_integer(MinBin), binary_to_integer(SBin)}
+					}
+			end,
+			ExpireSec = calendar:datetime_to_gregorian_seconds(ExpireDT),
+			NowSec = calendar:datetime_to_gregorian_seconds(calendar:universal_time()),
+			Expired = case (ExpireSec - NowSec) of
+				E when E =< 0 -> {true, abs(E) / 24 / 3600};
+				E when E < 30*24*3600 -> {soon, E / 24 / 3600};
+				E -> {false, E / 24 /3600}
 			end,
 
 			CertHostParts = lists:reverse(string:tokens(string:to_lower(SubjectCN), ".")),
@@ -197,20 +208,17 @@ probe(Host, TlsHost, Port, Timeout, WarnCredSsp, Protocols) ->
 			{continue, [Prots, Ver, Cipher, Expired, HostMatch]}
 		end,
 		fun
-			([ssl], Ver, Cipher, false, true) ->
-				{return, {ok, "connected ~s, valid certificate, using ~p", [atom_to_list(Ver), Cipher]}};
-			([credssp], Ver, _Cipher, false, true) when WarnCredSsp ->
+			([ssl], Ver, Cipher, {false, Days}, true) ->
+				{return, {ok, "connected ~s, valid certificate (expires in ~.1f days), using ~999p", [atom_to_list(Ver), Days, Cipher]}};
+			([credssp], Ver, _Cipher, {false, Days}, true) when WarnCredSsp ->
 				{return, {warning, "CredSSP/NLA is enabled, but connected ~s, valid certificate", [atom_to_list(Ver)]}};
-			([credssp], Ver, Cipher, false, true) ->
-				{return, {ok, "connected ~s, valid certificate, using ~p", [atom_to_list(Ver), Cipher]}};
-			(_, Ver, _Cipher, {true, Secs}, _) ->
-				Days = Secs / (24*3600),
+			([credssp], Ver, Cipher, {false, Days}, true) ->
+				{return, {ok, "connected ~s, valid certificate, using ~999p", [atom_to_list(Ver), Cipher]}};
+			(_, Ver, _Cipher, {true, Days}, _) ->
 				{return, {critical, "~s certificate expired ~.1f days ago", [atom_to_list(Ver), Days]}};
-			([credssp], Ver, _Cipher, {soon, Secs}, _) when WarnCredSsp ->
-				Days = Secs / (24*3600),
+			([credssp], Ver, _Cipher, {soon, Days}, _) when WarnCredSsp ->
 				{return, {warning, "CredSSP/NLA is enabled, and ~s certificate will expire in ~.1f days", [atom_to_list(Ver), Days]}};
-			(_, Ver, _Cipher, {soon, Secs}, _) ->
-				Days = Secs / (24*3600),
+			(_, Ver, _Cipher, {soon, Days}, _) ->
 				{return, {warning, "~s certificate will expire in ~.1f days", [atom_to_list(Ver), Days]}};
 			([credssp], Ver, _Cipher, _, {false, CN}) when WarnCredSsp ->
 				{return, {warning, "CredSSP/NLA is enabled, and ~s certificate does not match hostname (~p)", [atom_to_list(Ver), CN]}};
@@ -232,47 +240,3 @@ maybe([Fun | Rest], Args) ->
 		{return, Value} ->
 			Value
 	end.
-
-getopt([], _Opts, Args) -> Args;
-getopt([[$-, $- | K], V | Rest], Opts, Args) ->
-	case lists:keyfind(K, 3, Opts) of
-		{Atom, _Short, K, string} ->
-			getopt(Rest, Opts, [{Atom, V} | Args]);
-		{Atom, _Short, K, integer} ->
-			getopt(Rest, Opts, [{Atom, list_to_integer(V)} | Args]);
-		{Atom, _Short, K, Type} when (Type =:= false) or (Type =:= undefined) ->
-			getopt([V | Rest], Opts, [{Atom, true} | Args]);
-		false ->
-			io:format("unknown option --~s\n", [K]),
-			usage()
-	end;
-getopt([[$-, $- | K] | Rest], Opts, Args) ->
-	case lists:keyfind(K, 3, Opts) of
-		{Atom, _Short, K, Type} when (Type =:= false) or (Type =:= undefined) ->
-			getopt(Rest, Opts, [{Atom, true} | Args]);
-		_ ->
-			io:format("unknown option --~s\n", [K]),
-			usage()
-	end;
-getopt([[$- | K], V | Rest], Opts, Args) ->
-	case lists:keyfind(K, 2, Opts) of
-		{Atom, K, _Long, string} ->
-			getopt(Rest, Opts, [{Atom, V} | Args]);
-		{Atom, K, _Long, integer} ->
-			getopt(Rest, Opts, [{Atom, list_to_integer(V)} | Args]);
-		{Atom, K, _Long, Type} when (Type =:= false) or (Type =:= undefined) ->
-			getopt([V | Rest], Opts, [{Atom, true} | Args]);
-		false ->
-			io:format("unknown option -~s\n", [K]),
-			usage()
-	end;
-getopt([[$- | K] | Rest], Opts, Args) ->
-	case lists:keyfind(K, 3, Opts) of
-		{Atom, _Short, K, Type} when (Type =:= false) or (Type =:= undefined) ->
-			getopt(Rest, Opts, [{Atom, true} | Args]);
-		_ ->
-			io:format("unknown option -~s\n", [K]),
-			usage()
-	end;
-getopt([Next | Rest], Opts, Args) ->
-	getopt(Rest, Opts, [Next | Args]).

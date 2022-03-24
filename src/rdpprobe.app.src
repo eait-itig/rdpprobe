@@ -9,7 +9,9 @@
                   kernel,
                   stdlib,
                   crypto,
-                  rdp_proto
+                  ssl,
+                  rdp_proto,
+                  getopt
                  ]},
   {start_phases, []},
   {env, []}
