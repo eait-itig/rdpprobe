@@ -36,6 +36,8 @@
 -export([main/1]).
 
 main(Args) ->
+	logger:add_handler(default, logger_std_h, #{type => standard_error}),
+	logger:set_primary_config(level, emergency),
 	{ok, _} = application:ensure_all_started(rdpprobe),
 	OptSpecList = [
 		{tls_host, $h, "tls-host", string, "Hostname for certificate checks"},
@@ -59,7 +61,6 @@ main(Args) ->
 main_opt(Host, Opts) ->
 	#{port := Port, timeout := Timeout, warn_credssp := WarnCredSsp} = Opts,
 	TlsHost = maps:get(tls_host, Opts, Host),
-	error_logger:tty(false),
 	Out = probe(Host, TlsHost, Port, Timeout, WarnCredSsp, [ssl, credssp]),
 	case Out of
 		{ok, String, Args} ->
@@ -194,7 +195,7 @@ probe(Host, TlsHost, Port, Timeout, WarnCredSsp, Protocols) ->
 			NowSec = calendar:datetime_to_gregorian_seconds(calendar:universal_time()),
 			Expired = case (ExpireSec - NowSec) of
 				E when E =< 0 -> {true, abs(E) / 24 / 3600};
-				E when E < 30*24*3600 -> {soon, E / 24 / 3600};
+				E when E < 3*24*3600 -> {soon, E / 24 / 3600};
 				E -> {false, E / 24 /3600}
 			end,
 
